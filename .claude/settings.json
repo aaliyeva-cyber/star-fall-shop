@@ -1,0 +1,91 @@
+{
+  "env": {
+    "CLAUDE_CODE_USE_POWERSHELL_TOOL": "0",
+    "CLAUDE_CODE_DISABLE_ARTIFACT": "1",
+    "CLAUDE_CODE_DISABLE_WORKFLOWS": "1",
+    "CLAUDE_CODE_DISABLE_CRON": "1",
+    "CLAUDE_CODE_SUBAGENT_MODEL": "haiku"
+  },
+  "hooks": {
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/session-start.mjs",
+            "timeout": 10
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/changes-resume.mjs",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "PreToolUse": [
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/guard.mjs",
+            "timeout": 10,
+            "statusMessage": "Checking whether this file is yours\u2026"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/component-guard.mjs",
+            "timeout": 10,
+            "statusMessage": "Looking for this in the design system\u2026"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/ux-gate.mjs",
+            "timeout": 10,
+            "statusMessage": "Checking whether the copy was reviewed\u2026"
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/changes-gate.mjs",
+            "timeout": 10,
+            "statusMessage": "Checking the change journal\u2026"
+          }
+        ]
+      }
+    ],
+    "Stop": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/notes-gate.mjs",
+            "timeout": 10,
+            "statusMessage": "Looking for anything worth remembering\u2026"
+          },
+          {
+            "type": "command",
+            "command": "node .claude/hooks/context-app-sync.mjs",
+            "timeout": 20,
+            "statusMessage": "Refreshing the screen map\u2026"
+          }
+        ]
+      }
+    ]
+  }
+}

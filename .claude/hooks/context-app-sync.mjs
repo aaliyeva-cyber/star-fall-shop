@@ -1,0 +1,90 @@
+#!/usr/bin/env node
+//
+//  context-app-sync — keeps the screen map in step with the documents
+//  ─────────────────────────────────────────────────────────────────
+//
+//  WHY THIS EXISTS
+//  The feature catalogue, the documents and the state map the team sees behind the Context
+//  button are built from your own files — but not by themselves. You work on a screen, add a
+//  state to the matrix, fix the brief, and the team is still looking at yesterday without
+//  knowing it. A stale map is worse than none: people make decisions from it.
+//
+//  Hoping the agent remembers to rebuild did not work — measured, it does not. So a program
+//  does it now, at the end of every turn.
+//
+//  WHEN IT RUNS
+//  On its own, when the agent finishes. Only if the Context button is connected, and only if
+//  documents or screens changed during the turn. Otherwise it stays silent.
+//
+//  WHAT YOU SEE
+//  One line saying the data was rebuilt. Nothing to confirm.
+//
+//  IF SOMETHING GOES WRONG
+//  A failed rebuild never blocks the turn. To see why: node scripts/context-app.mjs export
+//
+import fs from 'node:fs'
+import path from 'node:path'
+import { spawnSync } from 'node:child_process'
+import { flush, rootOf, say } from './lib/dialect.mjs'
+
+const root = rootOf(process.cwd())
+
+// Button not connected — nothing to rebuild.
+const manifest = path.join(root, 'public', 'context-app-data', 'manifest.json')
+if (!fs.existsSync(manifest)) process.exit(0)
+
+// The most recent edit among the map's sources: feature documents and prototype screens.
+function newest(dir, best = 0) {
+  let entries
+  try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return best }
+  for (const e of entries) {
+    if (e.name.startsWith('.') || e.name === 'node_modules') continue
+    const p = path.join(dir, e.name)
+    try {
+      best = e.isDirectory() ? newest(p, best) : Math.max(best, fs.statSync(p).mtimeMs)
+    } catch {}
+  }
+  return best
+}
+
+// And right away: do the documents still match the code. A fast check, no browser — otherwise
+// the agent ends the turn with a report that stopped being true during that same turn.
+const quick = spawnSync(process.execPath, ['scripts/screens.mjs', '--quick'], { cwd: root, encoding: 'utf8' })
+if (quick.status === 1 && quick.stdout.trim()) {
+  say('[screens] documents and screens have drifted apart — tell the designer, do not report green:')
+  for (const line of quick.stdout.trim().split(String.fromCharCode(10)).slice(0, 5)) say('  ' + line)
+}
+
+const built = fs.statSync(manifest).mtimeMs
+// Wherever the project keeps them, as the checks themselves read it. Loaded softly: a hook that
+// throws on a missing script is skipped by Claude Code without a word.
+let place = { features: { abs: path.join(root, 'docs', 'features') }, screens: { abs: path.join(root, 'src', 'screens') } }
+try { place = (await import('../../scripts/where.mjs')).where(root) } catch {}
+const changed = Math.max(
+  newest(place.features.abs),
+  newest(place.screens.abs),
+  // Settings and presets — the Context settings column reads them from the same data.
+  (() => { try { return fs.statSync(path.join(root, 'src', 'variants.json')).mtimeMs } catch { return 0 } })(),
+)
+// Lines are collected and sent at the end, never printed on the way — and for a long time the
+// end was an `exit` standing in front of the send, so every word this check found died here.
+// The drift between documents and screens was the loudest of them: the whole reason the check
+// runs at the end of a turn, and the agent never heard it once.
+const done = () => { flush('Stop'); process.exit(0) }
+
+if (changed <= built) done()
+
+const run = spawnSync(process.execPath, ['scripts/context-app.mjs', 'export'], {
+  cwd: root,
+  encoding: 'utf8',
+})
+if (run.status !== 0) {
+  say('[context-app] could not rebuild the data — take a look: node scripts/context-app.mjs export')
+  done()
+}
+
+// Take the node count out of the exporter's report — that is the useful part.
+const nodes = /nodes on the map: (\d+)/.exec(run.stdout || '')
+say('[context-app] data rebuilt' + (nodes ? ', nodes on the map: ' + nodes[1] : ''))
+
+done()

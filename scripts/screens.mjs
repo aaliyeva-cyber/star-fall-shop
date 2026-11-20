@@ -1,0 +1,731 @@
+#!/usr/bin/env node
+//
+//  screens — checks that the screens do what the documents promise
+//  ───────────────────────────────────────────────────────────────────
+//
+//  WHY THIS EXISTS
+//  The documents describe which states each screen lives in: empty, loading, error, blocked.
+//  The map behind the Context button grows from those same documents: every node promises to
+//  open a screen in a particular state. But the document promises and the code shows, and the
+//  two drift apart silently. The team clicks a node, lands somewhere else, and assumes it was
+//  meant that way.
+//
+//  This check walks every promise and looks at what actually happens.
+//
+//  WHEN IT RUNS
+//  When you ask — check the screens — and before showing work to the team:
+//    node scripts/screens.mjs            check everything
+//    node scripts/screens.mjs --install  fetch the browser for the full check
+//
+//  WHAT IT CHECKS
+//  Without a browser, immediately: whether each state from the documents appears in the
+//  screen code at all. That catches the main thing — a state described and never built.
+//  And whether the screens are built from the design system at all, rather than merely
+//  breaking none of its rules.
+//  With a browser: the screen opens, the console is clean, and states differ from each other,
+//  which means the screen really shows them instead of drawing the same thing.
+//
+//  WHAT IT DOES NOT DO
+//  It does not judge beauty. Comparing against a mockup is /review. It does not fix what it
+//  finds: it prints the list and leaves.
+//
+//  IF SOMETHING GOES WRONG
+//  'no browser' means the full check is skipped and the fast one remains. To fetch it:
+//  node scripts/screens.mjs --install (downloads Chromium, about 150 MB, once).
+//
+import fs from 'node:fs'
+import path from 'node:path'
+import { spawn, spawnSync } from 'node:child_process'
+import { where } from './where.mjs'
+
+const root = process.cwd()
+const NL = String.fromCharCode(10)
+const args = process.argv.slice(2)
+// Where the features and the screens are: the same answer the document check gets.
+const place = where(root)
+
+const read = (p) => fs.readFileSync(p, 'utf8')
+const dirs = (p) => (fs.existsSync(p) ? fs.readdirSync(p, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name) : [])
+
+// ——— what was promised ———
+
+// Promises come from the Context App map: it is already built from the state matrices.
+// No map — at least check that every screen opens.
+// The map is built from the documents, and it is what this check reads its promises from. Write
+// the state matrices, run the check in the same breath, and the map is still yesterday's: three
+// screens checked instead of twenty-seven states, and a green answer for work nobody looked at.
+// The exporter is local and quick, so the map is brought level before anything is judged.
+function freshenMap() {
+  const manifest = path.join(root, 'public', 'context-app-data', 'manifest.json')
+  if (!fs.existsSync(manifest)) return null
+  const newest = (dir, best = 0) => {
+    let entries
+    try { entries = fs.readdirSync(dir, { withFileTypes: true }) } catch { return best }
+    for (const e of entries) {
+      if (e.name.startsWith('.')) continue
+      const p = path.join(dir, e.name)
+      try { best = e.isDirectory() ? newest(p, best) : Math.max(best, fs.statSync(p).mtimeMs) } catch {}
+    }
+    return best
+  }
+  // Timestamps are a local shortcut: a fresh checkout (GitHub) gives every file the same new
+  // time, so there KIT_MAP_FRESHEN=always rebuilds the map before judging instead of trusting them.
+  const docs = newest(place.features.abs)
+  if (process.env.KIT_MAP_FRESHEN !== 'always' && (!docs || docs <= fs.statSync(manifest).mtimeMs)) return null
+  const r = spawnSync(process.execPath, [path.join(root, 'scripts', 'context-app.mjs'), 'export'], {
+    cwd: root, encoding: 'utf8',
+  })
+  if (r.status !== 0) return 'the documents are newer than the map and it could not be rebuilt — node scripts/context-app.mjs export'
+  const nodes = /nodes on the map: (\d+)/.exec(r.stdout || '')
+  return 'the documents had moved since the map was built, so it was rebuilt first'
+    + (nodes ? ' — ' + nodes[1] + ' nodes' : '')
+}
+
+function promises() {
+  const manifest = path.join(root, 'public', 'context-app-data', 'manifest.json')
+  const out = []
+  if (fs.existsSync(manifest)) {
+    try {
+      const m = JSON.parse(read(manifest))
+      for (const f of m.features || []) {
+        for (const n of f.flowMap?.nodes || []) {
+          out.push({ id: n.id, feature: f.id, screen: n.target.sectionId, state: n.target.query?.state || null })
+        }
+      }
+    } catch {}
+  }
+  // A screen with no state matrix never reaches the map, and the map used to be the whole list:
+  // the screen was then checked by nobody at all, while the run still ended in "ready to show".
+  // Whatever the documents forgot, a folder of screens is a screen and is opened here too.
+  const named = new Set(out.map((p) => p.screen))
+  for (const screen of place.screens.list) {
+    if (named.has(screen)) continue
+    out.push({ id: screen, screen, state: null })
+  }
+  return out
+}
+
+// ——— layer one: without a browser ———
+
+function sourceOf(screen) {
+  const dir = path.join(place.screens.abs, screen)
+  let text = ''
+  const walk = (d) => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name)
+      if (e.isDirectory()) walk(p)
+      else if (/\.(tsx?|jsx?)$/.test(e.name)) text += read(p)
+    }
+  }
+  if (fs.existsSync(dir)) walk(dir)
+  return text
+}
+
+// A missing screen is a fact and matters more than anything else: the prototype then silently
+// shows a neighbouring screen while the map node looks like it works.
+function missingScreens(list) {
+  const seen = new Set()
+  const problems = []
+  for (const p of list) {
+    if (seen.has(p.screen)) continue
+    seen.add(p.screen)
+    if (!sourceOf(p.screen)) {
+      problems.push([p.screen, 'no screen at ' + place.screens.dir + '/' + p.screen + ' — the prototype will show another one instead'])
+    }
+  }
+  return problems
+}
+
+function staticCheck(list) {
+  const problems = []
+  const sources = new Map()
+  for (const p of list) {
+    if (!sources.has(p.screen)) sources.set(p.screen, sourceOf(p.screen))
+    const src = sources.get(p.screen)
+    if (!src) continue
+    // The ordinary state is what a screen draws when it is asked for nothing in particular, so
+    // the word normal has no reason to appear in the code. Reported as a problem it failed every
+    // honest screen, and a run that always ends red is a run nobody reads.
+    if (p.state === 'normal') continue
+    if (p.state && !src.includes("'" + p.state + "'") && !src.includes('"' + p.state + '"')) {
+      problems.push([p.id, 'state "' + p.state + '" is described in the documents but never mentioned in the code — the screen may show it by default'])
+    }
+  }
+  return problems
+}
+
+// ——— built from the design system, or not built at all ———
+
+// Bans stop the wrong thing getting in; they do not make the right thing happen. A screen can
+// break no rule and still hold no design system at all — controls hand-rolled out of styled
+// divs carrying the right token values. Right tokens on a hand-made control is still not the
+// design system, and nothing else here notices: the guard recognises a substitution by name,
+// and a file full of Row and Panel names nothing.
+//
+// A real hole in the library is not drift, and stopping the work over it would be worse than
+// the hole. Mark it — `// gap: XUI has no range slider` — and the file passes; the mark shows
+// up in `node scripts/debt.mjs` as the list the design system team wants.
+// One import from the library used to buy a whole file its silence. A live run built a store
+// front on a hand-drawn top bar — logo, three links, the current-page highlight, the page
+// frame — and the file passed because it also used a Badge for the cart counter. So it is
+// counted now rather than merely detected: elements the file draws itself against components
+// it takes from the library.
+// The same reading the write-time check uses, so the two never drift apart. Loaded softly:
+// a check that throws on a missing file would take the whole screen report with it.
+let ownInside = () => []
+try {
+  ({ ownInside } = await import('../.claude/hooks/lib/slots.mjs'))
+} catch {}
+
+// A box of one's own is not automatically an interface element. A page frame, a four-up grid,
+// a row that spaces two things apart — those arrange what the library drew and are the screen's
+// own business. Counting them as hand-drawn made every honest screen fail until a `// gap:`
+// mark was added, and the mark then went to the design system team as "the library was missing
+// a flex row", which is not a thing anybody is missing. So what a box does is read, not that it
+// exists: arranging is free, painting counts.
+const ARRANGING = new Set([
+  'display', 'flex', 'flex-direction', 'flex-wrap', 'flex-flow', 'flex-grow', 'flex-shrink',
+  'flex-basis', 'gap', 'row-gap', 'column-gap', 'grid', 'grid-template', 'grid-template-columns',
+  'grid-template-rows', 'grid-template-areas', 'grid-auto-flow', 'grid-auto-rows',
+  'grid-auto-columns', 'grid-area', 'grid-column', 'grid-row', 'place-items', 'place-content',
+  'place-self', 'align-items', 'align-self', 'align-content', 'justify-content', 'justify-items',
+  'justify-self', 'order', 'margin', 'margin-top', 'margin-right', 'margin-bottom', 'margin-left',
+  'margin-inline', 'margin-block', 'padding', 'padding-top', 'padding-right', 'padding-bottom',
+  'padding-left', 'padding-inline', 'padding-block', 'width', 'min-width', 'max-width', 'height',
+  'min-height', 'max-height', 'aspect-ratio', 'position', 'top', 'right', 'bottom', 'left',
+  'inset', 'z-index', 'overflow', 'overflow-x', 'overflow-y', 'box-sizing', 'container-type',
+])
+
+const paints = (css) => {
+  for (const m of css.matchAll(/(?:^|[\s;{])([a-z][a-z-]*)\s*:/g)) {
+    if (!ARRANGING.has(m[1])) return true
+  }
+  return false
+}
+
+// Every `const X = styled.tag\`...\`` in the file, with its rules read, so the ones that only
+// arrange can be left out of the count.
+function drawnByHand(src) {
+  const re = /(?:^|\n)\s*(?:export\s+)?const\s+[A-Z][A-Za-z0-9]*\s*=\s*styled\.[a-z][A-Za-z0-9]*\s*`/g
+  let count = 0
+  let m
+  while ((m = re.exec(src))) {
+    let i = re.lastIndex
+    let inside = 0
+    for (; i < src.length; i++) {
+      const c = src[i]
+      if (c === '\\') { i += 1; continue }
+      if (c === '$' && src[i + 1] === '{') { inside += 1; i += 1; continue }
+      if (inside > 0) { if (c === '}') inside -= 1; continue }
+      if (c === '`') break
+    }
+    if (paints(src.slice(re.lastIndex, i))) count += 1
+    re.lastIndex = Math.max(i, re.lastIndex)
+  }
+  return count
+}
+const TRACKED_IMPORT = /^(?:@xsolla\/xui-|@xui-vibe|\.)|components\//
+const RENDERS = /<[A-Z][\w.]*[\s/>]/
+const GAP_MARK = /(?:\/\/|\{\/\*)[ \t]*gap[ \t]*:[ \t]*\S/i
+// Written by the kit, not by the designer: the router and the entry point.
+const PLUMBING = new Set(['app.tsx', 'main.tsx'])
+
+// Only meaningful when the project actually builds on XUI. Another design system by link, or
+// none at all, and there is nothing to compare against.
+function usesXui() {
+  try {
+    const pkg = JSON.parse(read(path.join(root, 'package.json')))
+    const deps = Object.keys({ ...pkg.dependencies, ...pkg.devDependencies })
+    return deps.some((d) => d.startsWith('@xsolla/xui-'))
+  } catch { return false }
+}
+
+// Names this file brought in from the design system, the team gallery, or another component
+// of the project — the three places a screen is allowed to take an element from.
+// A component of the project's own is a fair building block — but only if it is itself built
+// on the library or admits what the library was missing. Counted as library without asking,
+// it became the way round this whole check: move the hand-drawn boxes into a component next
+// door, import it, and the screen reads as composed from the system while every surface on it
+// is the project's own. The first version of the kit closed this by asking the same question
+// of the imported file, recursively, and that is what happens here.
+const standsUp = new Map()
+
+function resolveImport(from, spec) {
+  const base = path.resolve(path.dirname(from), spec)
+  for (const candidate of [base + '.tsx', base + '.ts', path.join(base, 'index.tsx'), path.join(base, 'index.ts')]) {
+    if (fs.existsSync(candidate)) return candidate
+  }
+  return null
+}
+
+function composesFromLibrary(file, seen) {
+  if (standsUp.has(file)) return standsUp.get(file)
+  if (seen.has(file)) return true                 // a cycle: do not blame a file for itself
+  seen.add(file)
+  let src
+  try { src = read(file) } catch { return true }  // not a file of ours: a package, or gone
+  if (GAP_MARK.test(src)) { standsUp.set(file, true); return true }
+  const verdict = drawnByHand(src) <= fromTheLibrary(src, file, seen)
+  standsUp.set(file, verdict)
+  return verdict
+}
+
+function fromTheLibrary(src, file, seen = new Set()) {
+  const names = new Set()
+  const re = /import\s+(?:type\s+)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/g
+  let m
+  while ((m = re.exec(src))) {
+    const spec = m[2]
+    if (!TRACKED_IMPORT.test(spec)) continue
+    // From the design system or the team gallery: a building block, no question asked. From a
+    // file of ours: only if that file answers the same question.
+    if (/^[.]/.test(spec)) {
+      const target = file ? resolveImport(file, spec) : null
+      if (target && !composesFromLibrary(target, seen)) continue
+    }
+    for (const part of m[1].split(',')) {
+      const name = part.trim().split(/\s+as\s+/).pop().trim()
+      if (/^[A-Z]/.test(name)) names.add(name)
+    }
+  }
+  let used = 0
+  for (const name of names) {
+    const uses = src.match(new RegExp('<' + name + '[\\s/>]', 'g'))
+    used += uses ? uses.length : 0
+  }
+  return used
+}
+
+// The designer may take the library as a base rather than a rule (state.json designSystem.strict
+// is false). Then a hand-drawn element is their call, and neither the count nor the `// gap:` mark
+// is asked of them. Never answered reads as strict, so a project from before the choice is
+// checked as it always was. Loaded softly, like the slots: a missing file is not "relaxed".
+let strictDs = () => true
+try {
+  const { dsMode } = await import('../.claude/hooks/lib/ds-mode.mjs')
+  strictDs = () => dsMode(root).strict
+} catch {}
+
+function handRolled() {
+  if (!usesXui() || !strictDs()) return []
+  const problems = []
+  const walk = (d) => {
+    let entries
+    try { entries = fs.readdirSync(d, { withFileTypes: true }) } catch { return }
+    for (const e of entries) {
+      const p = path.join(d, e.name)
+      // src/kit is the inspector runtime the kit puts down, not designer surface.
+      if (e.isDirectory()) { if (e.name !== 'kit' && !e.name.startsWith('.')) walk(p); continue }
+      if (!/\.tsx?$/.test(e.name)) continue
+      if (/\.(stories|test|spec)\.tsx?$/.test(e.name) || PLUMBING.has(e.name)) continue
+      const src = read(p)
+      // A module with no markup in it still draws, if what it defines paints. Boxes moved into a
+      // .ts next door used to leave the count entirely — the screen then looked composed from the
+      // library while every surface on it was the project's own.
+      if (!RENDERS.test(src)) {
+        if (!drawnByHand(src) || GAP_MARK.test(src)) continue
+        const rel1 = path.relative(root, p).split(path.sep).join('/')
+        problems.push([rel1, 'draws elements of its own and takes nothing from the library — a'
+          + ' surface, a border or a colour of your own is a component, wherever the file sits:'
+          + ' compose it from the system, or say what the library is missing: // gap: what is missing'])
+        continue
+      }
+      const rel0 = path.relative(root, p).split(path.sep).join('/')
+      // Handed to a library component: our own markup through a prop, or as its first child.
+      // A gap mark does not excuse this one — the answer is never a better wrapper.
+      const inside = ownInside(src)
+      if (inside.length) {
+        problems.push([rel0, 'changes a design system component past what it declares: '
+          + inside.slice(0, 3).join('; ') + ' — a component takes what it declares and nothing else.'
+          + ' What it cannot say, the screen says another way, and the gap goes to the designer as an OQ-N'])
+      }
+      const own = drawnByHand(src)
+      const library = fromTheLibrary(src, p)
+      if (own <= library) continue
+      if (GAP_MARK.test(src)) continue
+      const rel = path.relative(root, p).split(path.sep).join('/')
+      problems.push([rel, 'draws ' + own + (own === 1 ? ' element' : ' elements') + ' of its own against ' + library + ' taken from '
+        + 'the library — compose it from XUI, or say what the library is missing: // gap: what is missing'])
+    }
+  }
+  walk(path.join(root, 'src'))
+  return problems
+}
+
+// A short stand-in for a long string, so two renderings can be compared without keeping
+// either of them around.
+function fold(text) {
+  let h = 0
+  for (let i = 0; i < text.length; i++) h = (Math.imul(h, 31) + text.charCodeAt(i)) | 0
+  return text.length + ':' + h
+}
+
+// ——— layer two: in a browser ———
+
+async function browser() {
+  // KIT_SCREENS_BROWSER=off keeps the check to the code even where playwright is installed:
+  // the required CI job runs it so, since a fresh runner has no browser binaries; the
+  // advisory job, which fetches Chromium, opens the screens for real.
+  if (process.env.KIT_SCREENS_BROWSER === 'off') return null
+  try { return await import('playwright') } catch { return null }
+}
+
+function freePort() { return 5300 + Math.floor(Math.random() * 400) }
+
+// Our own server, not the first one around: port 5173 easily holds a neighbouring project,
+// and the check then silently inspects someone else's screens. That has happened.
+//
+// The port is asked for, but the address is taken from what the server says. A dev script that
+// is a wrapper — concurrently, npm-run-all — hands --port to the wrapper, Vite starts on a port
+// of its own, and waiting on the one asked for timed out with "check npm run dev" against a
+// server that had been up in 151 ms. The address our own child prints is ours, so reading it
+// does not reopen the neighbouring-project hole.
+function startServer(port) {
+  // One command line rather than a command and its arguments: under a shell node warns
+  // about the second form, and the warning landed in the middle of the check's output.
+  // A group of its own outside Windows, so the whole tree can be stopped: the shell, npm and
+  // the server under them. On Windows that would open a console window; taskkill walks the
+  // tree there instead.
+  const child = spawn('npm run dev -- --port ' + port + ' --strictPort', {
+    cwd: root, stdio: ['ignore', 'pipe', 'pipe'], shell: true, detached: process.platform !== 'win32',
+  })
+  let said = ''
+  const hear = (chunk) => { said = (said + chunk.toString()).slice(-20000) }
+  child.stdout.on('data', hear)
+  child.stderr.on('data', hear)
+  child.said = () => said.replace(/\x1b\[[0-9;]*m/g, '')
+  child.exited = null
+  // `| 0`: Windows reports a failed start as an unsigned number, 4294963238 for -4058.
+  child.on('exit', (code) => { child.exited = code === null ? 'a signal' : 'code ' + (code | 0) })
+  return child
+}
+
+// The tree first, then the shell. Killing the shell first orphaned the server under it: taskkill
+// then found no tree to walk, and every run left a dev server holding a port until reboot.
+function stopServer(server) {
+  if (process.platform === 'win32') {
+    spawnSync('taskkill', ['/PID', String(server.pid), '/T', '/F'], { stdio: 'ignore' })
+  } else {
+    try { process.kill(-server.pid, 'SIGTERM') } catch {}
+  }
+  try { server.kill() } catch {}
+}
+
+function announced(server) {
+  const m = /https?:\/\/(?:localhost|127\.0\.0\.1|\[::1\]):\d+(?:\/[^\s]*)?/.exec(server.said())
+  return m ? m[0].replace(/\/+$/, '') : null
+}
+
+const devScript = () => {
+  try { return JSON.parse(read(path.join(root, 'package.json'))).scripts?.dev || null } catch { return null }
+}
+
+// Waits for the asked port or the address the server printed, whichever answers. On failure it
+// says what actually happened instead of blaming a command that may be working fine.
+async function reach(server, asked, tries = 40) {
+  for (let i = 0; i < tries; i++) {
+    const heard = announced(server)
+    for (const url of heard && heard !== asked ? [heard, asked] : [asked]) {
+      try { if ((await fetch(url + '/')).ok) return { url } } catch {}
+    }
+    if (server.exited) break
+    await new Promise((r) => setTimeout(r, 500))
+  }
+  const heard = announced(server)
+  const tail = server.said().trim().split(NL).filter(Boolean).slice(-4).map((l) => '    ' + l.slice(0, 140))
+  const dev = devScript()
+  const lines = []
+  if (server.exited) lines.push('npm run dev stopped with ' + server.exited + ' before anything answered.')
+  else if (heard) lines.push('npm run dev says the prototype is at ' + heard + ', and nothing answered there in 20 seconds.')
+  else lines.push('npm run dev printed no address in 20 seconds, and nothing answered at ' + asked + '.')
+  if (dev) lines.push('The dev script is: ' + dev)
+  if (dev && !/^\s*vite\b/.test(dev)) lines.push('It is not plain vite, so --port ' + asked.split(':').pop() + ' may have gone to the wrapper instead.')
+  if (tail.length) lines.push('Its last lines:' + NL + tail.join(NL))
+  return { failure: lines.join(NL + '    ') }
+}
+
+// A screen is not there the moment the page says "load". The first address after a cold start
+// waits on Vite compiling the whole prototype, and a flat pause of a few hundred milliseconds
+// ran out in the middle of it: the check then read an empty root, called two states identical,
+// and was green again on the next run. So it waits for something to be drawn, and only then
+// lets the screen settle.
+async function settled(page) {
+  try {
+    await page.waitForFunction(
+      () => (document.getElementById('root')?.childElementCount ?? 0) > 0,
+      null, { timeout: 15000 },
+    )
+  } catch { /* nothing ever appeared: the emptiness itself is what the check reports below */ }
+  await page.waitForTimeout(350)
+}
+
+async function runtimeCheck(list) {
+  const pw = await browser()
+  if (!pw) return null
+
+  const port = freePort()
+  const server = startServer(port)
+  let url = 'http://localhost:' + port
+  const problems = []
+  const signatures = new Map()
+  const previews = new Map()
+
+  try {
+    const up = await reach(server, url)
+    if (up.failure) return [['—', 'the prototype did not come up. ' + up.failure]]
+    if (up.url !== url) console.log('  the server came up at ' + up.url + ', not on the port asked for — checking it there')
+    url = up.url
+    const chromium = pw.chromium
+    const browserInstance = await chromium.launch()
+    const page = await browserInstance.newPage({ viewport: { width: 1440, height: 900 } })
+
+    for (const p of list) {
+      if (!sourceOf(p.screen)) continue          // no screen, nothing to look at
+      const errors = []
+      page.removeAllListeners('console')
+      page.removeAllListeners('pageerror')
+      page.on('console', (m) => { if (m.type() === 'error') errors.push(m.text().slice(0, 120)) })
+      page.on('pageerror', (e) => errors.push(String(e.message).slice(0, 120)))
+
+      const hash = p.screen + (p.state ? '?state=' + p.state : '')
+      await page.goto(url + '/#' + hash, { waitUntil: 'load' })
+      await settled(page)
+
+      const shot = await page.evaluate(() => {
+        const root = document.getElementById('root')
+        return {
+          text: (root?.innerText || '').replace(/\s+/g, ' ').trim(),
+          nodes: root ? root.querySelectorAll('*').length : 0,
+          // A state can be wordless and still be the right screen: loading is a spinner, and the
+          // library offers nothing else for it. Counting words alone called that state empty on
+          // every run, which is the one state the library forces to look exactly like this.
+          wordless: root ? root.querySelectorAll('[role], [aria-label], svg, img, canvas').length : 0,
+        }
+      })
+
+      if (!shot.nodes || (shot.text.length < 3 && !shot.wordless)) {
+        problems.push([p.id, 'the screen is empty: ' + shot.nodes + (shot.nodes === 1 ? ' element' : ' elements') + ' in it'])
+      }
+      // Warnings from our own tooling do not count as errors.
+      // The inspector marks make React complain about an unknown prop — that is our own
+      // instrument and in a report it only gets in the way. React prints the prop name as a
+      // separate argument, so the text keeps a %s in it.
+      const noise = (e) => e.includes('__xuiSrc') || e.includes('does not recognize the `%s` prop')
+      const real = errors.filter((e) => !noise(e))
+      if (real.length) problems.push([p.id, 'console error: ' + real[0]])
+
+      // The whole text, not the first few hundred characters of it: two states often share a
+      // header and a filter row and differ only further down the page. Truncating the
+      // comparison calls those two states identical when they are not.
+      // The map does not draw a node by its address. It loads the prototype at
+      // ?screenmapPreview=<feature>:<node> with no hash at all, and the prototype has to
+      // resolve the node itself. Miss that and every card on the map shows the default screen
+      // while every address works — three rounds of "the map opens the same thing" came from
+      // exactly this, and nothing here could see it.
+      if (p.feature && p.state) {
+        await page.goto(url + '/?screenmapPreview=' + encodeURIComponent(p.feature + ':' + p.id), { waitUntil: 'load' })
+        await settled(page)
+        const card = await page.evaluate(() => {
+          const root = document.getElementById('root')
+          return (root?.innerText || '').replace(/\s+/g, ' ').trim()
+        })
+        const seen = previews.get(p.screen) || []
+        // A picture that came back empty says nothing: the preview resolves the node through a
+        // fetch, and under load that can still be in flight. Two empty captures used to read as
+        // "the same picture" and accuse a map that was wired correctly — which is the one kind
+        // of complaint nobody can act on. Only what was actually drawn is compared.
+        if (card) previews.set(p.screen, [...seen, { state: p.state, direct: fold(shot.text), card: fold(card) }])
+      }
+
+      const key = fold(shot.text) + '|' + shot.nodes
+      const same = signatures.get(p.screen)
+      if (p.state && same) {
+        const twin = same.find((s) => s.key === key)
+        if (twin) problems.push([p.id, 'looks exactly like "' + twin.state + '": either the screen should '
+          + 'show it differently, or mark the state N/A in the matrix and the node leaves the map'])
+      }
+      signatures.set(p.screen, [...(same || []), { state: p.state || 'no state', key }])
+    }
+
+    // Two states that look different at their own address but the same on the map mean the
+    // map is drawing the wrong picture — the screens are fine, the wiring is not.
+    for (const [screen, shots] of previews) {
+      const broken = shots.find((a) =>
+        shots.some((b) => b !== a && a.direct !== b.direct && a.card === b.card))
+      if (broken) {
+        problems.push([screen, 'the map draws the same picture for states that differ at their own '
+          + 'address — the node preview is not wired (?screenmapPreview=<feature>:<node>)'])
+      }
+    }
+
+    problems.push(...await settingsCheck(page, url, list))
+
+    await browserInstance.close()
+  } finally {
+    stopServer(server)
+  }
+  return problems
+}
+
+// Every option of every setting (src/variants.json) is opened next to the default on the
+// screens the setting names, and has to change something there. A switch in the Context
+// button that changes nothing is worse than none: the designer shows "the grid variant" and
+// the team looks at the list. The markup is compared, not the words — a grid and a list say
+// the same things. A setting that only matters under another (`when`) is opened under it.
+async function settingsCheck(page, url, list) {
+  let reg
+  try { reg = JSON.parse(fs.readFileSync(path.join(root, 'src', 'variants.json'), 'utf8')) } catch { return [] }
+  const axes = reg.axes ?? {}
+  const screens = [...new Set(list.map((p) => p.screen))].filter((s) => sourceOf(s))
+  const problems = []
+  const value = (id, option) => [axes[id].param ?? id, axes[id].values?.[option] ?? option]
+  const draw = async (screen, picks) => {
+    const q = new URLSearchParams()
+    for (const [id, option] of Object.entries(picks)) q.set(...value(id, option))
+    const errors = []
+    const onError = (e) => errors.push(String(e.message).slice(0, 120))
+    page.on('pageerror', onError)
+    // A real load every time, not a hash change: an option that throws takes the whole React
+    // tree down, and every comparison after it would be against an empty page.
+    await page.goto('about:blank')
+    await page.goto(url + '/#' + screen + (q.toString() ? '?' + q : ''), { waitUntil: 'load' })
+    await settled(page)
+    page.off('pageerror', onError)
+    const html = await page.evaluate(() => document.getElementById('root')?.innerHTML ?? '')
+    return { html: html.replace(/\s+/g, ' '), errors }
+  }
+  for (const [id, a] of Object.entries(axes)) {
+    if (a.archived === true || a.unbuilt || a.kind === 'many' || a.kind === 'text') continue
+    // A setting that changes what happens rather than what is drawn — "the bank declines" only
+    // shows after Pay is pressed — looks the same as its default on a still page, and this
+    // comparison failed every rehearsal on a prototype that worked. It is declared `behaviour`;
+    // that a screen reads it at all is still checked, by variants.mjs check.
+    if (a.behaviour === true) continue
+    const where = (a.screens ?? screens).filter((s) => screens.includes(s)).slice(0, 6)
+    if (!where.length) continue
+    // The conditions it needs, held the same on both sides of the comparison.
+    const under = Object.fromEntries((a.when ?? []).filter((w) => axes[w.axis] && w.is?.length).map((w) => [w.axis, w.is[0]]))
+    const base = {}
+    for (const s of where) base[s] = await draw(s, under)
+    for (const option of Object.keys(a.options ?? {})) {
+      if (option === a.default || (Array.isArray(a.archived) && a.archived.includes(option))) continue
+      let changed = false
+      for (const s of where) {
+        const shot = await draw(s, { ...under, [id]: option })
+        if (shot.errors.length) problems.push(['setting ' + id, '"' + option + '" on ' + s + ' breaks the screen: ' + shot.errors[0]])
+        if (shot.html !== base[s].html) changed = true
+      }
+      if (!changed) {
+        problems.push(['setting ' + id, '"' + (a.options[option] ?? option) + '" looks exactly like the default on '
+          + where.join(', ') + ' — the screen does not read it (useSetting(\'' + id + '\')), or it belongs on other screens;'
+          + ' if it changes what happens rather than what is drawn, mark it "behaviour": true in src/variants.json'])
+      }
+    }
+  }
+  return problems
+}
+
+// ——— types ———
+
+function typeCheck() {
+  if (!fs.existsSync(path.join(root, 'node_modules', 'typescript'))) return null
+  const r = spawnSync('npx tsc --noEmit', { cwd: root, encoding: 'utf8', shell: true })
+  if (r.status === 0) return []
+  // The team gallery is a repository of its own inside this one, and it is written against
+  // packages this project never installed. Importing one component from it drags the whole
+  // folder into the check, and a dozen complaints about somebody else's code bury the one
+  // line that is actually about this screen.
+  const mine = (l) => !/^(vendor|node_modules)[\\/]/.test(l)
+  return (r.stdout || '').split(NL).filter((l) => l.includes('error TS')).filter(mine).slice(0, 10)
+}
+
+// ——— fetching the browser ———
+
+function install() {
+  console.log('installing a browser for the screen check, one time, a couple of minutes…')
+  const a = spawnSync('npm install -D playwright --no-audit --no-fund', { cwd: root, stdio: 'inherit', shell: true })
+  if (a.status !== 0) { console.error('could not install playwright'); process.exit(1) }
+  const b = spawnSync('npx playwright install chromium', { cwd: root, stdio: 'inherit', shell: true })
+  if (b.status !== 0) { console.error('could not download Chromium'); process.exit(1) }
+  console.log('done: node scripts/screens.mjs')
+}
+
+// ——— the report ———
+
+async function main() {
+  if (args.includes('--install')) return install()
+
+  // The fast half: code only, no browser and no server. The end-of-turn hook needs it —
+  // it has to finish within a second and catch the main thing: the documents describe a
+  // state the screen does not have. A live run showed why: the agent reported a green check
+  // using a result from before it had extended the state matrix itself.
+  if (args.includes('--quick')) {
+    // Hard facts only: the screen is missing entirely. The guess that a state is not mentioned
+    // in the code stays out — a screen may show it by default, and a false alarm at the end of
+    // every turn teaches people to ignore warnings. The rest belongs to the full run.
+    const list = promises()
+    const problems = missingScreens(list)
+    for (const [id, what] of problems) console.log(id + ' — ' + what)
+    process.exit(problems.length ? 1 : 0)
+  }
+
+  // Nothing below means anything without the packages: the screens cannot be opened, the types
+  // cannot be read, and `npm run dev` does not start. A run that ends in "nothing wrong in what
+  // could be checked" while the prototype cannot open at all is worse than no run.
+  // Asked for the code-only pass (KIT_SCREENS_BROWSER=off, as GitHub runs it), the check goes on
+  // without the packages: the screens are read, not opened, and the types are skipped. The
+  // report says so below, so nobody mistakes it for the full pass.
+  const codeOnly = process.env.KIT_SCREENS_BROWSER === 'off'
+  if (fs.existsSync(path.join(root, 'package.json')) && !fs.existsSync(path.join(root, 'node_modules')) && !codeOnly) {
+    console.log('the packages are not installed here, so the prototype does not start and nothing')
+    console.log('below could be checked. Install them once there is a way to the registry: npm install')
+    process.exit(1)
+  }
+
+  for (const note of place.notes) console.log('note: ' + note)
+  const refreshed = freshenMap()
+  if (refreshed) console.log(refreshed)
+
+  const list = promises()
+  if (!list.length) {
+    console.log('no screens — nothing to check. Looked in ' + place.screens.dir + '/'
+      + (place.screens.how === 'state' ? ', as "paths" in state.json says.' : ' and src/pages/. Kept somewhere else: "paths": { "screens": "<folder>" } in state.json.'))
+    return
+  }
+  console.log('checking ' + list.length + ' promises from the documents and the map')
+
+  // With a browser it is the browser that judges: a screen may handle a state by default,
+  // so the word normal never appears in the code while the screen shows it correctly.
+  const runtime = await runtimeCheck(list)
+  const problems = [...missingScreens(list), ...(runtime ? runtime : staticCheck(list)), ...handRolled()]
+
+  const types = typeCheck()
+
+  if (!problems.length) console.log('  the screens do what was promised')
+  for (const [id, what] of problems) console.log('  ✗ ' + id + ' — ' + what)
+  if (usesXui() && !strictDs()) {
+    console.log('  not counted: elements drawn by hand — the design system is a base here, not a rule')
+  }
+
+  if (runtime === null && process.env.KIT_SCREENS_BROWSER === 'off') {
+    console.log('')
+    console.log('  checked against the code only, as asked (KIT_SCREENS_BROWSER=off): the browser pass runs elsewhere')
+  } else if (runtime === null) {
+    console.log('')
+    console.log('  checked against the code only: no browser, so what the screen draws was not seen')
+    console.log('  fetch it: node scripts/screens.mjs --install')
+  }
+  if (types === null) {
+    console.log('')
+    console.log('  the types were not checked: typescript is not installed here, and the build')
+    console.log('  never looks at them — install it: npm i -D typescript @types/react @types/react-dom')
+  }
+  if (types && types.length) {
+    console.log('')
+    console.log('  types:')
+    for (const t of types) console.log('    ' + t.slice(0, 140))
+  }
+  process.exit(problems.length || (types && types.length) ? 1 : 0)
+}
+
+main()

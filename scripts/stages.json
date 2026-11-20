@@ -1,0 +1,564 @@
+{
+  "note": "Stages of product work. Data, not prose: this list is read by docs.mjs and by the questionnaire in the start skill. Changing the set of stages happens only here.",
+  "stages": [
+    {
+      "id": "00",
+      "dir": "00_context",
+      "title": "Context",
+      "why": "brief from the PRD, user pains, competitors, platform",
+      "default": true,
+      "needs": [],
+      "artifacts": [
+        {
+          "file": "brief.md",
+          "title": "Brief",
+          "sections": [
+            {
+              "h": "Task summary",
+              "hint": "One paragraph: what we are doing and why. Pull it from the PRD."
+            },
+            {
+              "h": "Problem and opportunity",
+              "table": [
+                "Aspect",
+                "Details"
+              ],
+              "rows": [
+                "Problem",
+                "Opportunity",
+                "Success metric"
+              ]
+            },
+            {
+              "h": "Target users",
+              "table": [
+                "Role",
+                "Primary goal"
+              ]
+            },
+            {
+              "h": "Scope",
+              "hint": "In scope and explicitly out of scope \u2014 one list each."
+            },
+            {
+              "h": "Sources",
+              "table": [
+                "Type",
+                "Link"
+              ],
+              "rows": [
+                "PRD",
+                "Jira",
+                "Figma",
+                "Research"
+              ]
+            },
+            {
+              "h": "Open questions",
+              "table": [
+                "ID",
+                "Question",
+                "Status"
+              ],
+              "ids": "OQ"
+            }
+          ]
+        },
+        {
+          "file": "pain-points.md",
+          "title": "Pain points",
+          "sections": [
+            {
+              "h": "Pains",
+              "table": [
+                "ID",
+                "Pain",
+                "Where it comes from",
+                "Impact"
+              ],
+              "ids": "PP"
+            }
+          ]
+        },
+        {
+          "file": "competitive-analysis.md",
+          "title": "Competitive analysis",
+          "sections": [
+            {
+              "h": "Analogues",
+              "table": [
+                "Product",
+                "What they do",
+                "What is worth borrowing"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "platform-context.md",
+          "title": "Platform context",
+          "sections": [
+            {
+              "h": "Platform",
+              "hint": "web / mobile / both, target devices and browsers."
+            },
+            {
+              "h": "Constraints",
+              "hint": "What the environment forbids or dictates."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "01",
+      "dir": "01_domain",
+      "title": "Domain",
+      "why": "entities, business rules, roles, life cycles",
+      "default": false,
+      "needs": [
+        "00"
+      ],
+      "artifacts": [
+        {
+          "file": "entity-map.md",
+          "title": "Entity map",
+          "sections": [
+            {
+              "h": "Entities",
+              "table": [
+                "Entity",
+                "What it is",
+                "Related to"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "business-rules.md",
+          "title": "Business rules",
+          "sections": [
+            {
+              "h": "Rules",
+              "table": [
+                "ID",
+                "Rule",
+                "Source",
+                "Affects"
+              ],
+              "ids": "BR"
+            }
+          ]
+        },
+        {
+          "file": "roles-and-goals.md",
+          "title": "Roles and goals",
+          "sections": [
+            {
+              "h": "Roles",
+              "table": [
+                "Role",
+                "Goal",
+                "What they may not do"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "status-machines.md",
+          "title": "Status machines",
+          "sections": [
+            {
+              "h": "Life cycles",
+              "hint": "One block per entity: states and allowed transitions."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "02",
+      "dir": "02_service-blueprints",
+      "title": "Service blueprints",
+      "why": "user action, what the front end does, what the back end does, where it breaks",
+      "default": false,
+      "needs": [
+        "01"
+      ],
+      "artifacts": [
+        {
+          "file": "blueprint.md",
+          "title": "Blueprint",
+          "sections": [
+            {
+              "h": "Process",
+              "table": [
+                "Step",
+                "User action",
+                "Frontend",
+                "Backend",
+                "Where it breaks"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "03",
+      "dir": "03_jobs-and-tasks",
+      "title": "Jobs and tasks",
+      "why": "top tasks, job stories, decomposition",
+      "default": false,
+      "needs": [
+        "01"
+      ],
+      "artifacts": [
+        {
+          "file": "top-tasks.md",
+          "title": "Top tasks",
+          "sections": [
+            {
+              "h": "Tasks by priority",
+              "table": [
+                "#",
+                "Task",
+                "Role",
+                "How often"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "job-stories.md",
+          "title": "Job stories",
+          "sections": [
+            {
+              "h": "Stories",
+              "table": [
+                "ID",
+                "When",
+                "I want to",
+                "So that",
+                "Role"
+              ],
+              "ids": "JS"
+            }
+          ]
+        },
+        {
+          "file": "task-decomposition.md",
+          "title": "Task decomposition",
+          "sections": [
+            {
+              "h": "Steps",
+              "hint": "One block per top task: the steps the user takes."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "04",
+      "dir": "04_scenarios",
+      "title": "Scenarios",
+      "why": "happy paths, edge cases, failure and recovery \u2014 the backbone of future screens",
+      "default": true,
+      "needs": [
+        "00"
+      ],
+      "artifacts": [
+        {
+          "file": "scenario-matrix.md",
+          "title": "Scenario matrix",
+          "index": true,
+          "sections": [
+            {
+              "h": "All scenarios",
+              "table": [
+                "ID",
+                "Scenario",
+                "Related JS",
+                "Role",
+                "Screens",
+                "Status"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "happy-paths.md",
+          "title": "Happy paths",
+          "sections": [
+            {
+              "h": "HP-1 \u2014 name",
+              "hint": "Role, precondition, expected outcome, then a step table: step, user action, system response, screen. The three lines below put the path on the Context screen map: the job story it serves, the map points it walks in order, and where an edge case or a failure leaves it.",
+              "ids": "HP",
+              "fields": [
+                "Job Story",
+                "Map",
+                "Map deviations"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "edge-cases.md",
+          "title": "Edge cases",
+          "sections": [
+            {
+              "h": "Cases",
+              "table": [
+                "ID",
+                "Situation",
+                "What the interface does",
+                "Related HP"
+              ],
+              "ids": "EC"
+            }
+          ]
+        },
+        {
+          "file": "failure-and-recovery.md",
+          "title": "Failure and recovery",
+          "sections": [
+            {
+              "h": "Failures",
+              "table": [
+                "ID",
+                "What breaks",
+                "What the user sees",
+                "How they recover"
+              ],
+              "ids": "FR"
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "05",
+      "dir": "05_ia",
+      "title": "Information architecture",
+      "why": "navigation, objects on screen, permission matrix",
+      "default": false,
+      "needs": [
+        "04"
+      ],
+      "artifacts": [
+        {
+          "file": "navigation-model.md",
+          "title": "Navigation model",
+          "sections": [
+            {
+              "h": "Where the feature lives",
+              "hint": "Entry points and how the user gets back."
+            }
+          ]
+        },
+        {
+          "file": "object-model.md",
+          "title": "Object model",
+          "sections": [
+            {
+              "h": "Objects on screen",
+              "table": [
+                "Object",
+                "Shown as",
+                "Actions"
+              ]
+            }
+          ]
+        },
+        {
+          "file": "permission-matrix.md",
+          "title": "Permission matrix",
+          "sections": [
+            {
+              "h": "Role by action",
+              "table": [
+                "Action",
+                "Role A",
+                "Role B"
+              ],
+              "hint": "Unavailable means hidden, not disabled."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "06",
+      "dir": "06_state-design",
+      "title": "Screen states",
+      "why": "nine states per screen, not just the happy one",
+      "default": true,
+      "needs": [
+        "04"
+      ],
+      "perScreen": true,
+      "artifacts": [
+        {
+          "file": "state-matrix-<screen>.md",
+          "title": "State matrix",
+          "states": true
+        }
+      ]
+    },
+    {
+      "id": "07",
+      "dir": "07_screen-specs",
+      "title": "Screen specs",
+      "why": "the screen contract: what is on it, where data comes from, what each action does",
+      "default": true,
+      "needs": [
+        "06"
+      ],
+      "perScreen": true,
+      "artifacts": [
+        {
+          "file": "screen-contracts/contract-<screen>.md",
+          "title": "Screen contract",
+          "sections": [
+            {
+              "h": "Purpose",
+              "hint": "What this screen is for, in one sentence, and which scenarios it serves (HP-N)."
+            },
+            {
+              "h": "Mockup",
+              "hint": "Link to the Figma frame for this screen (the URL must carry ?node-id=). /review compares the built screen against it \u2014 without this link there is nothing to compare. There is no frame yet: write \"none yet\" on the line and raise it as an OQ-N. That is a filled section, and it says plainly that the screen was built from a description rather than from a drawing."
+            },
+            {
+              "h": "Blocks",
+              "table": [
+                "Block",
+                "Content",
+                "Component"
+              ]
+            },
+            {
+              "h": "Actions",
+              "table": [
+                "Action",
+                "What happens",
+                "Where it leads"
+              ],
+              "hint": "The last column is read by the map: name exactly one screen of this feature and an arrow appears between them, name none or two and the row is passed over in silence. \"Stays here\" is a fine answer for an action that opens nothing."
+            },
+            {
+              "h": "Data",
+              "table": [
+                "Field",
+                "Source",
+                "Value when empty"
+              ]
+            },
+            {
+              "h": "States",
+              "hint": "Link to the state matrix; list only what differs from it."
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "08",
+      "dir": "08_design-system",
+      "title": "Validation",
+      "why": "checking the prototype against what was designed: scenarios traced, states covered",
+      "default": false,
+      "needs": [
+        "07"
+      ],
+      "artifacts": [
+        {
+          "file": "patterns.md",
+          "title": "Patterns and deviations",
+          "sections": [
+            {
+              "h": "Own components",
+              "table": [
+                "Component",
+                "Why not from the design system",
+                "Agreed with"
+              ]
+            },
+            {
+              "h": "Deviations",
+              "table": [
+                "What",
+                "Where",
+                "Reason"
+              ]
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "09",
+      "dir": "09_progress-reviews",
+      "title": "Review",
+      "why": "feedback after showing the work and what was done with it",
+      "default": false,
+      "needs": [
+        "07"
+      ],
+      "artifacts": [
+        {
+          "file": "review.md",
+          "title": "Review",
+          "sections": [
+            {
+              "h": "Feedback",
+              "table": [
+                "#",
+                "Who",
+                "What they said",
+                "Decision"
+              ]
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "nineStates": [
+    [
+      "Empty",
+      "no data yet, first visit"
+    ],
+    [
+      "Loading",
+      "data is loading"
+    ],
+    [
+      "Partial",
+      "some data is here, some is loading or unavailable"
+    ],
+    [
+      "Normal",
+      "everything is fine, data loaded"
+    ],
+    [
+      "Degraded",
+      "some functions are temporarily unavailable"
+    ],
+    [
+      "Error",
+      "an error that needs action"
+    ],
+    [
+      "Blocked",
+      "no permission, or conditions not met"
+    ],
+    [
+      "Conflict",
+      "concurrent editing, out of sync"
+    ],
+    [
+      "Recovery",
+      "recovering after a failure"
+    ]
+  ]
+}

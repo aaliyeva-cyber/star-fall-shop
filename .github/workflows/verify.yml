@@ -1,0 +1,186 @@
+#
+#  verify — the kit's own checks, run by GitHub on a pull request
+#  ───────────────────────────────────────────────────────────────
+#
+#  WHY THIS EXISTS
+#  `/check` (scripts/preflight.mjs) runs on the designer's machine, when they remember. Where
+#  work goes through pull requests, a pull request is where other people start to rely on it, so
+#  the same checks run there too, without anyone remembering. Where work is pushed straight to
+#  main, nothing here runs: there is no `push` trigger, so a designer who never opens a pull
+#  request never hears from this file.
+#
+#  WHO GETS IT
+#  A repository made with "Use this template" gets this file with everything else. Existing
+#  projects do not receive it through `kit.mjs update`: it is not a seeded kit file. It is
+#  added where it is wanted — by the person who sets the repository up for pull-request work,
+#  or by Neuronet when it connects a repository to the design preview.
+#
+#  WHAT IT RUNS
+#    verify                            node scripts/preflight.mjs, installing nothing: documents,
+#                                      screens read as code (KIT_SCREENS_BROWSER=off), the map
+#                                      behind the Context button (rebuilt first, KIT_MAP_FRESHEN=
+#                                      always: a checkout's timestamps prove nothing), the kit
+#                                      itself, decisions. No
+#                                      package is downloaded, so no access to @xsolla/xui-* is
+#                                      needed and no token is involved; the types are not
+#                                      checked here (that needs the packages).
+#    screens in a browser (advisory)   opt-in: set the repository variable KIT_VERIFY_BROWSER to
+#                                      `on` (Settings → Secrets and variables → Actions →
+#                                      Variables). Installs the project and opens the screens in
+#                                      Chromium: they load, the console is clean, the states
+#                                      differ. Advisory, so a flaky browser never blocks a pull
+#                                      request. Needs the @xsolla/xui-* packages: each package
+#                                      grants the repository read access (GitHub Packages → the
+#                                      package → Manage Actions access); until then the job fails
+#                                      with a 401 and says so — the required job is unaffected.
+#
+#  IN THE KIT REPOSITORY ITSELF
+#  `kit check` is written for projects: in the kit's own repository it finds no .claude/kit.json
+#  (the kit does not adopt itself — scripts/kit.mjs isTheKitItself) and stops. So here the required
+#  job checks what the template can promise: every script and hook parses, and every JSON the
+#  kit ships is valid. A project made from the template runs the full preflight.
+#
+#  THE BROWSER JOB AND THE PRIVATE REGISTRY
+#  @xsolla/xui-* installs only from GitHub Packages. The job authenticates with the workflow's
+#  own GITHUB_TOKEN and nothing else: a pull request can rewrite this file, so no long-lived
+#  secret may be reachable from it, and GITHUB_TOKEN is minted per run with the permissions
+#  below and expires with the job. The token is present only while packages are fetched into
+#  npm's cache (`--ignore-scripts`; the project's .npmrc reduced to its safe, lockfile-shaping
+#  settings; checkout without persisted credentials). The install that runs scripts is a second,
+#  ordinary `npm ci --offline` from that cache, after the registry auth is removed: npm's own
+#  lifecycle, nothing replayed by hand. Forking is off on the kit and on the design repositories
+#  (repository setting and organization policy), so no pull request here comes from outside the
+#  repository; the refusal below is a second layer for the ordinary case.
+#
+name: verify
+
+on:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    # The job name is the status-check context a ruleset requires: keep it exactly
+    # `verify` (the rule accounts-design-experiments already carries, and what the
+    # Neuronet binding card and the fleet audit look for).
+    name: verify
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          # The project's own scripts run in this job; they must not find the job's token
+          # in the checkout's git configuration.
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+
+      # Nothing is installed: the preflight reads the documents, the map, the kit, the decisions
+      # and the screens as code. The browser pass is the opt-in job below.
+      - name: Preflight (a project made from the template)
+        if: github.repository != 'xsolla/product-design-starter'
+        env:
+          KIT_SCREENS_BROWSER: "off"
+          # A fresh checkout gives every file the same new mtime, so the "is the map older than
+          # the documents" shortcut cannot work here: rebuild the Context map before judging.
+          KIT_MAP_FRESHEN: "always"
+        run: node scripts/preflight.mjs
+
+      - name: The kit parses (the template repository itself)
+        if: github.repository == 'xsolla/product-design-starter'
+        run: |
+          set -eu
+          find scripts .claude/hooks -type f -name '*.mjs' -print0 \
+            | xargs -0 -n1 node --check
+          # The kit also installs TypeScript into projects (the Vite source-tag plugin);
+          # Node 22 parses it with types stripped.
+          find scripts .claude/hooks -type f -name '*.ts' -print0 \
+            | xargs -0 -n1 node --experimental-strip-types --check
+          # Every JSON file the kit ships (the manifest, settings, stages, the seeded root
+          # state.json): node --check does not follow imports, so a broken file here would only
+          # show up in a project, where the scripts parse it.
+          git ls-files -z -- '*.json' \
+            | xargs -0 -n1 node -e 'JSON.parse(require("fs").readFileSync(process.argv[1], "utf8"))'
+          echo "kit scripts, hooks and JSON parse"
+
+  screens-full:
+    name: screens in a browser (advisory)
+    # Opt-in per repository: the variable KIT_VERIFY_BROWSER=on. Off (the default), this job does
+    # not start, so a repository without package access never sees a red run from it.
+    if: vars.KIT_VERIFY_BROWSER == 'on' && github.repository != 'xsolla/product-design-starter'
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    continue-on-error: true
+    permissions:
+      contents: read
+      packages: read
+    env:
+      TRUSTED: ${{ github.event.pull_request.head.repo.full_name == github.repository }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          registry-url: https://npm.pkg.github.com
+          scope: "@xsolla"
+
+      - name: Refuse a fork's pull request (private packages)
+        if: env.TRUSTED != 'true' && hashFiles('package.json') != ''
+        run: |
+          echo "::error::This pull request comes from a fork. The private @xsolla/xui-* packages cannot be installed next to code from outside the repository. Push the branch to this repository and open the pull request from there."
+          exit 1
+
+      # The registry token is in the environment only while packages are fetched, and nothing
+      # the pull request controls can read it there: no package script runs (`--ignore-scripts`),
+      # and the project's .npmrc is reduced to its safe settings first, because a checked-in
+      # .npmrc could name another host and ask npm to send the token to it.
+      - name: Fetch the project's packages (once it exists)
+        if: env.TRUSTED == 'true' && hashFiles('package.json') != ''
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if [ -f .npmrc ]; then
+            grep -E '^[[:space:]]*(legacy-peer-deps|install-links|strict-peer-deps|engine-strict|save-exact|package-lock|omit|include|prefer-offline|fund|audit)[[:space:]]*=' .npmrc > .npmrc.kept || true
+            mv .npmrc.kept .npmrc
+          fi
+          if [ -f package-lock.json ]; then
+            npm ci --ignore-scripts --no-audit --no-fund
+          else
+            npm install --ignore-scripts --no-audit --no-fund
+          fi
+
+      # The real install, with the token gone: the registry auth is removed, node_modules is
+      # thrown away and `npm ci` runs again from npm's own cache (`--offline`: every tarball is
+      # already there, nothing is downloaded). npm runs its own lifecycle, in its own order.
+      - name: Install from the cache, with npm's own lifecycle (without the token)
+        if: env.TRUSTED == 'true' && hashFiles('package.json') != ''
+        env:
+          NODE_AUTH_TOKEN: ""
+        run: |
+          rm -f "$NPM_CONFIG_USERCONFIG" ~/.npmrc
+          rm -rf node_modules
+          if [ -f package-lock.json ]; then
+            npm ci --offline --no-audit --no-fund
+          else
+            npm install --offline --no-audit --no-fund
+          fi
+
+      - name: Fetch Chromium
+        if: env.TRUSTED == 'true' && hashFiles('package.json') != ''
+        run: |
+          npm install --no-save --no-audit --no-fund playwright
+          npx playwright install --with-deps chromium
+
+      - name: Screens in a browser
+        if: env.TRUSTED == 'true' && hashFiles('package.json') != ''
+        env:
+          # Same as the required job: a checkout's timestamps prove nothing about the map.
+          KIT_MAP_FRESHEN: "always"
+        run: node scripts/screens.mjs
